@@ -1,0 +1,451 @@
+import importlib
+import json
+import os
+import pathlib
+import re
+import stat
+import sys
+import tempfile
+import time
+import unittest
+from types import SimpleNamespace
+from unittest import mock
+
+from jose import JWTError, jwt
+
+from plogical.securityUtils import (
+    TERMINAL_JWT_AUDIENCE,
+    TERMINAL_JWT_ISSUER,
+    TERMINAL_JWT_SECRET_ENV,
+    TERMINAL_JWT_SECRET_FILE_ENV,
+    get_terminal_jwt_secret,
+)
+
+
+class TerminalSecretTests(unittest.TestCase):
+    def test_upgrade_restarts_terminal_after_rebuilding_the_virtualenv(self):
+        upgrade_script = (
+            pathlib.Path(__file__).parents[1]
+            / "foxitipanel_upgrade.sh"
+        ).read_text(encoding="utf-8")
+        main_upgrade_calls = list(re.finditer(
+            r"^(?:Main_Upgrade|if ! Main_Upgrade; then)$",
+            upgrade_script,
+            re.MULTILINE,
+        ))
+        terminal_restart_calls = list(re.finditer(
+            r"^Restart_Web_Terminal$", upgrade_script, re.MULTILINE,
+        ))
+        self.assertEqual(len(main_upgrade_calls), 1)
+        self.assertEqual(len(terminal_restart_calls), 1)
+        self.assertGreater(
+            terminal_restart_calls[0].start(), main_upgrade_calls[0].start(),
+        )
+        self.assertIn(
+            "if [[ -x /usr/local/FoxitiCP/bin/python ]]",
+            upgrade_script,
+        )
+
+    def test_service_uses_the_virtualenv_python_entry_point(self):
+        service = (
+            pathlib.Path(__file__).parents[1]
+            / "fastapi_ssh_server.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStart=/usr/local/FoxitiCP/bin/python -m uvicorn",
+            service,
+        )
+        self.assertNotIn("/usr/local/FoxitiCP/bin/python3", service)
+
+    def test_upgrade_enables_terminal_service_for_reboots(self):
+        upgrade_source = (
+            pathlib.Path(__file__).parents[1]
+            / "plogical/upgrade.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "systemctl enable --now fastapi_ssh_server",
+            upgrade_source,
+        )
+
+    def test_terminal_connects_to_the_effective_ssh_port(self):
+        source = (
+            pathlib.Path(__file__).parents[1]
+            / "fastapi_ssh_server.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("port=SSH_PORT", source)
+
+    def test_terminal_errors_use_the_available_log_writer(self):
+        source = (
+            pathlib.Path(__file__).parents[1]
+            / "websiteFunctions/website.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("FoxitiCPLogFileWriter.writeLog(", source)
+
+    def test_permission_repairs_preserve_terminal_secret_access(self):
+        root = pathlib.Path(__file__).parents[1]
+        for script_path in (root / "plogical/acl.py", root / "plogical/upgrade.py"):
+            source = script_path.read_text(encoding="utf-8")
+            self.assertIn(
+                'terminalSecretPath = '
+                "'/usr/local/FoxitiCP/terminal_jwt_secret'",
+                source,
+            )
+            self.assertIn(
+                'command = "chown foxitipanel:foxitipanel %s" % '
+                'terminalSecretPath',
+                source,
+            )
+            self.assertIn(
+                'command = "chmod 600 %s" % terminalSecretPath',
+                source,
+            )
+
+    def test_secret_is_created_once_with_private_permissions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            secret_path = os.path.join(temp_dir, "terminal-secret")
+            environment = {
+                TERMINAL_JWT_SECRET_ENV: "",
+                TERMINAL_JWT_SECRET_FILE_ENV: secret_path,
+            }
+            with mock.patch.dict(os.environ, environment, clear=False):
+                first = get_terminal_jwt_secret(create_if_missing=True)
+                second = get_terminal_jwt_secret(create_if_missing=True)
+
+            self.assertEqual(first, second)
+            self.assertGreaterEqual(len(first), 32)
+            self.assertEqual(stat.S_IMODE(os.stat(secret_path).st_mode), 0o600)
+
+    def test_existing_secret_permissions_are_repaired(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            secret_path = os.path.join(temp_dir, "terminal-secret")
+            with open(secret_path, "w") as secret_file:
+                secret_file.write("p" * 64)
+            os.chmod(secret_path, 0o644)
+            environment = {
+                TERMINAL_JWT_SECRET_ENV: "",
+                TERMINAL_JWT_SECRET_FILE_ENV: secret_path,
+            }
+            with mock.patch.dict(os.environ, environment, clear=False):
+                self.assertEqual(get_terminal_jwt_secret(), "p" * 64)
+
+            self.assertEqual(stat.S_IMODE(os.stat(secret_path).st_mode), 0o600)
+
+    def test_private_secret_does_not_require_a_permission_rewrite(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            secret_path = os.path.join(temp_dir, "terminal-secret")
+            with open(secret_path, "w") as secret_file:
+                secret_file.write("p" * 64)
+            os.chmod(secret_path, 0o600)
+            environment = {
+                TERMINAL_JWT_SECRET_ENV: "",
+                TERMINAL_JWT_SECRET_FILE_ENV: secret_path,
+            }
+            with mock.patch.dict(os.environ, environment, clear=False), \
+                    mock.patch(
+                        "plogical.securityUtils.os.chmod",
+                        side_effect=OSError("read-only filesystem"),
+                    ), mock.patch(
+                        "plogical.securityUtils.os.fchmod",
+                        side_effect=OSError("read-only filesystem"),
+                    ):
+                self.assertEqual(get_terminal_jwt_secret(), "p" * 64)
+
+    def test_missing_secret_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            secret_path = os.path.join(temp_dir, "missing-secret")
+            environment = {
+                TERMINAL_JWT_SECRET_ENV: "",
+                TERMINAL_JWT_SECRET_FILE_ENV: secret_path,
+            }
+            with mock.patch.dict(os.environ, environment, clear=False):
+                with self.assertRaises(RuntimeError):
+                    get_terminal_jwt_secret(create_if_missing=False)
+
+    def test_short_environment_secret_is_rejected(self):
+        environment = {
+            TERMINAL_JWT_SECRET_ENV: "too-short",
+            TERMINAL_JWT_SECRET_FILE_ENV: "",
+        }
+        with mock.patch.dict(os.environ, environment, clear=False):
+            with self.assertRaises(RuntimeError):
+                get_terminal_jwt_secret(create_if_missing=True)
+
+    def test_unwritable_secret_path_fails_closed(self):
+        with tempfile.NamedTemporaryFile() as parent_file:
+            secret_path = os.path.join(parent_file.name, "terminal-secret")
+            environment = {
+                TERMINAL_JWT_SECRET_ENV: "",
+                TERMINAL_JWT_SECRET_FILE_ENV: secret_path,
+            }
+            with mock.patch.dict(os.environ, environment, clear=False):
+                with self.assertRaises(RuntimeError):
+                    get_terminal_jwt_secret(create_if_missing=True)
+
+
+class TerminalTokenTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.secret = "s" * 64
+        cls.environment = mock.patch.dict(
+            os.environ,
+            {
+                TERMINAL_JWT_SECRET_ENV: cls.secret,
+                TERMINAL_JWT_SECRET_FILE_ENV: "",
+            },
+            clear=False,
+        )
+        cls.environment.start()
+        sys.modules.pop("fastapi_ssh_server", None)
+        cls.server = importlib.import_module("fastapi_ssh_server")
+
+    @classmethod
+    def tearDownClass(cls):
+        sys.modules.pop("fastapi_ssh_server", None)
+        cls.environment.stop()
+
+    def make_token(self, **overrides):
+        now = int(time.time())
+        payload = {
+            "iss": TERMINAL_JWT_ISSUER,
+            "aud": TERMINAL_JWT_AUDIENCE,
+            "iat": now,
+            "nbf": now,
+            "exp": now + 600,
+            "sub": "1",
+            "ssh_user": "example",
+            "jti": "t" * 43,
+            "web_terminal": True,
+        }
+        payload.update(overrides)
+        return jwt.encode(payload, self.secret, algorithm="HS256")
+
+    def test_valid_panel_token_is_accepted(self):
+        with mock.patch.object(
+            self.server,
+            "consume_terminal_request",
+            return_value=True,
+        ):
+            payload = self.server.decode_terminal_token(self.make_token())
+        self.assertEqual(payload["ssh_user"], "example")
+
+    def test_signing_secret_alone_cannot_authorize_a_terminal(self):
+        with mock.patch.object(
+            self.server,
+            "consume_terminal_request",
+            return_value=False,
+        ):
+            with self.assertRaises(JWTError):
+                self.server.decode_terminal_token(self.make_token())
+
+    def test_wrong_signing_secret_is_rejected(self):
+        token = jwt.encode(
+            {
+                "iss": TERMINAL_JWT_ISSUER,
+                "aud": TERMINAL_JWT_AUDIENCE,
+                "iat": int(time.time()),
+                "nbf": int(time.time()),
+                "exp": int(time.time()) + 600,
+                "ssh_user": "root",
+            },
+            "w" * 64,
+            algorithm="HS256",
+        )
+        with self.assertRaises(JWTError):
+            self.server.decode_terminal_token(token)
+
+    def test_missing_issuer_is_rejected(self):
+        token = self.make_token(iss=None)
+        with self.assertRaises(JWTError):
+            self.server.decode_terminal_token(token)
+
+    def test_excessive_token_lifetime_is_rejected(self):
+        now = int(time.time())
+        token = self.make_token(iat=now, nbf=now, exp=now + 3600)
+        with self.assertRaises(JWTError):
+            self.server.decode_terminal_token(token)
+
+    def test_ssh_port_uses_effective_sshd_configuration(self):
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout="addressfamily any\nport 23456\n",
+        )
+        with mock.patch.object(
+            self.server.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            self.assertEqual(self.server.get_ssh_port(), 23456)
+
+        run.assert_called_once_with(
+            ["/usr/sbin/sshd", "-T"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+    def test_ssh_port_falls_back_to_main_configuration(self):
+        config = "# Port 22\nPort 2200 # managed by foxitiPanel\n"
+        with mock.patch.object(
+            self.server.subprocess,
+            "run",
+            side_effect=OSError("sshd unavailable"),
+        ), mock.patch(
+            "builtins.open",
+            mock.mock_open(read_data=config),
+        ):
+            self.assertEqual(self.server.get_ssh_port(), 2200)
+
+    def test_ssh_port_falls_back_to_22_for_invalid_values(self):
+        completed = SimpleNamespace(returncode=0, stdout="port 70000\n")
+        with mock.patch.object(
+            self.server.subprocess,
+            "run",
+            return_value=completed,
+        ), mock.patch(
+            "builtins.open",
+            mock.mock_open(read_data="Port invalid\n"),
+        ):
+            self.assertEqual(self.server.get_ssh_port(), 22)
+
+    @mock.patch("plogical.acl.ACLManager.CheckForPremFeature", return_value=1)
+    @mock.patch(
+        "websiteFunctions.models.Websites.objects.get",
+        return_value=SimpleNamespace(externalApp="example"),
+    )
+    @mock.patch(
+        "loginSystem.models.Administrator.objects.get",
+        return_value=SimpleNamespace(),
+    )
+    @mock.patch("plogical.acl.ACLManager.loadedACL", return_value={})
+    @mock.patch("plogical.acl.ACLManager.checkOwnership", return_value=1)
+    @mock.patch(
+        "websiteFunctions.views.get_terminal_jwt_secret",
+        return_value="s" * 64,
+    )
+    @mock.patch(
+        "websiteFunctions.views.create_terminal_request",
+        return_value="r" * 43,
+    )
+    def test_panel_token_contains_one_time_authorization(
+            self,
+            create_request,
+            unused_secret,
+            unused_ownership,
+            unused_acl,
+            unused_admin,
+            unused_website,
+            entitlement):
+        from django.test import RequestFactory
+        from websiteFunctions.views import get_terminal_jwt
+
+        request = RequestFactory().post(
+            "/websites/getTerminalJWT",
+            data=json.dumps({"domain": "example.com"}),
+            content_type="application/json",
+        )
+        request.session = {"userID": 7}
+
+        response = get_terminal_jwt(request)
+        result = json.loads(response.content.decode("utf-8"))
+        payload = jwt.decode(
+            result["token"],
+            "s" * 64,
+            algorithms=["HS256"],
+            audience=TERMINAL_JWT_AUDIENCE,
+            issuer=TERMINAL_JWT_ISSUER,
+        )
+
+        self.assertEqual(result["status"], 1)
+        self.assertEqual(payload["jti"], "r" * 43)
+        self.assertEqual(payload["sub"], "7")
+        self.assertEqual(payload["ssh_user"], "example")
+        create_request.assert_called_once_with(7, "example")
+        entitlement.assert_called_once_with("all")
+        self.assertIs(payload["web_terminal"], True)
+
+    def make_account(self, home):
+        return SimpleNamespace(
+            pw_dir=str(home),
+            pw_uid=os.getuid(),
+            pw_gid=os.getgid(),
+        )
+
+    def test_authorized_keys_updates_preserve_other_terminal_keys(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = pathlib.Path(temp_dir) / "site.example"
+            home.mkdir()
+            descriptor = self.server.open_authorized_keys(
+                self.make_account(home),
+                allowed_home_root=temp_dir,
+            )
+            try:
+                self.server.add_ephemeral_key(descriptor, "ssh-rsa first", "webterm-first")
+                self.server.add_ephemeral_key(descriptor, "ssh-rsa second", "webterm-second")
+                self.server.remove_ephemeral_key(descriptor, "webterm-first")
+            finally:
+                os.close(descriptor)
+
+            authorized_keys = home / ".ssh" / "authorized_keys"
+            content = authorized_keys.read_text(encoding="utf-8")
+            self.assertNotIn("webterm-first", content)
+            self.assertIn("webterm-second", content)
+            self.assertEqual(stat.S_IMODE(authorized_keys.stat().st_mode), 0o600)
+
+    def test_ssh_directory_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            home = root / "site.example"
+            target = root / "target"
+            home.mkdir()
+            target.mkdir()
+            victim = target / "authorized_keys"
+            victim.write_text("preserve\n", encoding="utf-8")
+            (home / ".ssh").symlink_to(target)
+
+            with self.assertRaises(OSError):
+                self.server.open_authorized_keys(
+                    self.make_account(home),
+                    allowed_home_root=temp_dir,
+                )
+            self.assertEqual(victim.read_text(encoding="utf-8"), "preserve\n")
+
+    def test_authorized_keys_symlink_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            home = root / "site.example"
+            ssh_dir = home / ".ssh"
+            home.mkdir()
+            ssh_dir.mkdir()
+            victim = root / "victim"
+            victim.write_text("preserve\n", encoding="utf-8")
+            (ssh_dir / "authorized_keys").symlink_to(victim)
+
+            with self.assertRaises(OSError):
+                self.server.open_authorized_keys(
+                    self.make_account(home),
+                    allowed_home_root=temp_dir,
+                )
+            self.assertEqual(victim.read_text(encoding="utf-8"), "preserve\n")
+
+    def test_authorized_keys_hard_link_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            home = root / "site.example"
+            ssh_dir = home / ".ssh"
+            home.mkdir()
+            ssh_dir.mkdir()
+            victim = root / "victim"
+            victim.write_text("preserve\n", encoding="utf-8")
+            os.link(victim, ssh_dir / "authorized_keys")
+
+            with self.assertRaises(PermissionError):
+                self.server.open_authorized_keys(
+                    self.make_account(home),
+                    allowed_home_root=temp_dir,
+                )
+            self.assertEqual(victim.read_text(encoding="utf-8"), "preserve\n")
+
+
+if __name__ == "__main__":
+    unittest.main()

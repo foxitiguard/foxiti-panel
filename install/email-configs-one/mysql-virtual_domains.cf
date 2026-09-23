@@ -1,0 +1,5 @@
+user = foxitipanel
+password = SLTUIUxqhulwsh
+dbname = foxitipanel
+query = SELECT domain FROM e_domains WHERE domain='%s'
+hosts = localhost

@@ -1,0 +1,5 @@
+user = foxitipanel
+password = 1qaz@9xvps
+dbname = foxitipanel
+query = SELECT domain FROM e_domains WHERE domain='%s'
+hosts = 127.0.0.1:3307

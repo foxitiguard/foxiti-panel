@@ -1,0 +1,1285 @@
+#!/usr/local/FoxitiCP/bin/python
+import os
+import os.path
+import sys
+import django
+
+from plogical.acl import ACLManager
+sys.path.append('/usr/local/FoxitiCP')
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "FoxitiCP.settings")
+try:
+    django.setup()
+except:
+    pass
+import shutil
+from plogical import installUtilities
+
+import subprocess
+import shlex
+from plogical import FoxitiCPLogFileWriter as logging
+from plogical.mysqlUtilities import mysqlUtilities
+from plogical.dnsUtilities import DNS
+from random import randint
+from plogical.processUtilities import ProcessUtilities
+from managePHP.phpManager import PHPManager
+from plogical.vhostConfs import vhostConfs
+from ApachController.ApacheVhosts import ApacheVhost
+try:
+    from websiteFunctions.models import Websites, ChildDomains, aliasDomains, DockerSites, WPSites, WPStaging
+    from databases.models import Databases
+except:
+    pass
+import pwd
+import grp
+
+## If you want justice, you have come to the wrong place.
+
+
+class vhost:
+
+    Server_root = "/usr/local/lsws"
+    cyberPanel = "/usr/local/FoxitiCP"
+    redisConf = '/usr/local/lsws/conf/dvhost_redis.conf'
+
+    @staticmethod
+    def addUser(virtualHostUser, path):
+        try:
+
+            FNULL = open(os.devnull, 'w')
+            if os.path.exists("/etc/lsb-release"):
+                command = f'/usr/sbin/adduser --no-create-home --home {path} --disabled-login --gecos "" {virtualHostUser}'
+            else:
+                command = f"/usr/sbin/adduser {virtualHostUser} -M -d {path}"
+
+            ProcessUtilities.executioner(command)
+
+            command = f"/usr/sbin/groupadd {virtualHostUser}"
+            ProcessUtilities.executioner(command)
+
+            command = f"/usr/sbin/usermod -a -G {virtualHostUser} {virtualHostUser}"
+            ProcessUtilities.executioner(command)
+
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(f"{str(msg)} [addingUsers]")
+
+    @staticmethod
+    def createDirectories(path, virtualHostUser, pathHTML, pathLogs, confPath, completePathToConfigFile):
+        try:
+            FNULL = open(os.devnull, 'w')
+
+            try:
+                command = 'chmod 711 /home'
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+            except:
+                pass
+
+            try:
+                os.makedirs(path)
+
+                command = f"chown {virtualHostUser}:{virtualHostUser} {path}"
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+                command = f"chmod 711 {path}"
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+            except OSError as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [27 Not able create to directories for virtual host [createDirectories]]")
+                #return [0, "[27 Not able to directories for virtual host [createDirectories]]"]
+
+            try:
+                os.makedirs(pathHTML)
+
+                if ProcessUtilities.decideDistro() == ProcessUtilities.centos or ProcessUtilities.decideDistro() == ProcessUtilities.cent8:
+                    groupName = 'nobody'
+                else:
+                    groupName = 'nogroup'
+
+                command = f"chown {virtualHostUser}:{groupName} {pathHTML}"
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+                command = f"chmod 750 {pathHTML}"
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+            except OSError as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [33 Not able to directories for virtual host [createDirectories]]")
+                #return [0, "[33 Not able to directories for virtual host [createDirectories]]"]
+
+            try:
+                os.makedirs(pathLogs)
+
+                if ProcessUtilities.decideDistro() == ProcessUtilities.centos or ProcessUtilities.decideDistro() == ProcessUtilities.cent8:
+                    groupName = 'nobody'
+                else:
+                    groupName = 'nogroup'
+
+                command = "chown %s:%s %s" % ('root', groupName, pathLogs)
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+
+                if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+                    command = f"chmod -R 750 {pathLogs}"
+                else:
+                    command = f"chmod -R 750 {pathLogs}"
+
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+            except OSError as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [39 Not able to directories for virtual host [createDirectories]]")
+                #return [0, "[39 Not able to directories for virtual host [createDirectories]]"]
+
+            try:
+                ## For configuration files permissions will be changed later globally.
+                if not os.path.exists(confPath):
+                    os.makedirs(confPath)
+            except OSError as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [45 Not able to directories for virtual host [createDirectories]]")
+                #return [0, "[45 Not able to directories for virtual host [createDirectories]]"]
+
+            try:
+                ## For configuration files permissions will be changed later globally.
+                file = open(completePathToConfigFile, "w+")
+
+                command = "chown " + "lsadm" + ":" + "lsadm" + " " + completePathToConfigFile
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+                command = f'chmod 600 {completePathToConfigFile}'
+                cmd = shlex.split(command)
+                subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+            except IOError as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [createDirectories]]")
+                #return [0, "[45 Not able to directories for virtual host [createDirectories]]"]
+
+            return [1, 'None']
+
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [createDirectories]")
+            return [1, str(msg)]
+
+    @staticmethod
+    def finalizeVhostCreation(virtualHostName, virtualHostUser):
+        try:
+
+            FNULL = open(os.devnull, 'w')
+
+            shutil.copy("/usr/local/FoxitiCP/index.html", f"/home/{virtualHostName}/public_html/index.html")
+
+            command = f"chown {virtualHostUser}:{virtualHostUser} /home/{virtualHostName}/public_html/index.html"
+            cmd = shlex.split(command)
+            subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+            vhostPath = f"{vhost.Server_root}/conf/vhosts"
+
+            command = f"chown -R lsadm:lsadm {vhostPath}"
+            cmd = shlex.split(command)
+            subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [finalizeVhostCreation]")
+
+    @staticmethod
+    def createDirectoryForVirtualHost(virtualHostName,administratorEmail,virtualHostUser, phpVersion, openBasedir,
+                                      memSoftLimit=2047, memHardLimit=2047, maxConnections=10,
+                                      procSoftLimit=400, procHardLimit=500):
+
+        if not os.path.exists('/usr/local/lsws/Example/html/.well-known/acme-challenge'):
+            command = 'mkdir -p /usr/local/lsws/Example/html/.well-known/acme-challenge'
+            ProcessUtilities.normalExecutioner(command)
+
+        path = "/home/" + virtualHostName
+        pathHTML = "/home/" + virtualHostName + "/public_html"
+        pathLogs = "/home/" + virtualHostName + "/logs"
+        confPath = vhost.Server_root + "/conf/vhosts/"+virtualHostName
+        completePathToConfigFile = confPath +"/vhost.conf"
+
+
+        ## adding user
+
+        vhost.addUser(virtualHostUser, path)
+
+        ## Creating Directories
+
+        result = vhost.createDirectories(path, virtualHostUser, pathHTML, pathLogs, confPath, completePathToConfigFile)
+
+        if result[0] == 0:
+            return [0, result[1]]
+
+
+        ## Creating Per vhost Configuration File
+
+
+        if vhost.perHostVirtualConf(completePathToConfigFile,administratorEmail,virtualHostUser,phpVersion, virtualHostName, openBasedir,
+                                    memSoftLimit, memHardLimit, maxConnections, procSoftLimit, procHardLimit) == 1:
+            return [1,"None"]
+        else:
+            return [0,"[61 Not able to create per host virtual configurations [perHostVirtualConf]"]
+
+    @staticmethod
+    def perHostVirtualConf(vhFile, administratorEmail,virtualHostUser, phpVersion, virtualHostName, openBasedir,
+                          memSoftLimit=2047, memHardLimit=2047, maxConnections=10,
+                          procSoftLimit=400, procHardLimit=500):
+        # General Configurations tab
+        if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+            try:
+
+                confFile = open(vhFile, "w+")
+
+                php = PHPManager.getPHPString(phpVersion)
+
+                currentConf = vhostConfs.olsMasterConf
+                currentConf = currentConf.replace('{adminEmails}', administratorEmail)
+                currentConf = currentConf.replace('{virtualHostUser}', virtualHostUser)
+                currentConf = currentConf.replace('{php}', php)
+                currentConf = currentConf.replace('{adminEmails}', administratorEmail)
+                currentConf = currentConf.replace('{php}', php)
+
+                # Replace resource limits
+                currentConf = currentConf.replace('{memSoftLimit}', str(memSoftLimit))
+                currentConf = currentConf.replace('{memHardLimit}', str(memHardLimit))
+                currentConf = currentConf.replace('{maxConnections}', str(maxConnections))
+                currentConf = currentConf.replace('{procSoftLimit}', str(procSoftLimit))
+                currentConf = currentConf.replace('{procHardLimit}', str(procHardLimit))
+
+                if openBasedir == 1:
+                    currentConf = currentConf.replace('{open_basedir}', 'php_admin_value open_basedir "/tmp:$VH_ROOT"')
+                else:
+                    currentConf = currentConf.replace('{open_basedir}', '')
+
+
+
+                confFile.write(currentConf)
+                confFile.close()
+
+                return 1
+
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [IO Error with per host config file [perHostVirtualConf]]")
+                return 0
+        else:
+            try:
+
+                if not os.path.exists(vhost.redisConf):
+                    confFile = open(vhFile, "w+")
+                    php = PHPManager.getPHPString(phpVersion)
+
+                    currentConf = vhostConfs.lswsMasterConf
+
+                    currentConf = currentConf.replace('{virtualHostName}', virtualHostName)
+                    currentConf = currentConf.replace('{administratorEmail}', administratorEmail)
+                    currentConf = currentConf.replace('{externalApp}', virtualHostUser)
+                    currentConf = currentConf.replace('{php}', php)
+
+                    confFile.write(currentConf)
+
+                    confFile.close()
+
+                else:
+
+                    ## Non-www
+
+                    currentConf = vhostConfs.lswsRediConfMaster
+
+                    currentConf = currentConf.replace('{virtualHostName}', virtualHostName)
+                    currentConf = currentConf.replace('{administratorEmail}', administratorEmail)
+                    currentConf = currentConf.replace('{externalApp}', virtualHostUser)
+                    currentConf = currentConf.replace('{php}', phpVersion.lstrip('PHP '))
+                    currentConf = currentConf.replace('{uid}', str(pwd.getpwnam(virtualHostUser).pw_uid))
+                    currentConf = currentConf.replace('{gid}', str(grp.getgrnam(virtualHostUser).gr_gid))
+
+                    command = 'redis-cli set %s' % (currentConf)
+                    ProcessUtilities.executioner(command)
+
+                    ## WWW
+
+                    currentConf = vhostConfs.lswsRediConfMasterWWW
+
+                    currentConf = currentConf.replace('{virtualHostName}', 'www.%s' % (virtualHostName))
+                    currentConf = currentConf.replace('{master}', virtualHostName)
+                    currentConf = currentConf.replace('{administratorEmail}', administratorEmail)
+                    currentConf = currentConf.replace('{externalApp}', virtualHostUser)
+                    currentConf = currentConf.replace('{php}', phpVersion.lstrip('PHP '))
+                    currentConf = currentConf.replace('{uid}', str(pwd.getpwnam(virtualHostUser).pw_uid))
+                    currentConf = currentConf.replace('{gid}', str(grp.getgrnam(virtualHostUser).gr_gid))
+
+                    command = 'redis-cli set %s' % (currentConf)
+                    ProcessUtilities.executioner(command)
+
+                return 1
+
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [IO Error with per host config file [perHostVirtualConf]]")
+                return 0
+
+
+    @staticmethod
+    def createNONSSLMapEntry(virtualHostName):
+        try:
+            data = open("/usr/local/lsws/conf/httpd_config.conf").readlines()
+            writeDataToFile = open("/usr/local/lsws/conf/httpd_config.conf", 'w')
+
+            map = "  map                     " + virtualHostName + " " + virtualHostName + "\n"
+
+            mapchecker = 1
+
+            for items in data:
+                if (mapchecker == 1 and (items.find("listener") > -1 and items.find("Default") > -1)):
+                    writeDataToFile.writelines(items)
+                    writeDataToFile.writelines(map)
+                    mapchecker = 0
+                else:
+                    writeDataToFile.writelines(items)
+
+            return 1
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg))
+            return 0
+
+    @staticmethod
+    def createConfigInMainVirtualHostFile(virtualHostName):
+        if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+            try:
+
+                if vhost.createNONSSLMapEntry(virtualHostName) == 0:
+                    return [0, "Failed to create NON SSL Map Entry [createConfigInMainVirtualHostFile]"]
+
+                writeDataToFile = open("/usr/local/lsws/conf/httpd_config.conf", 'a')
+
+                currentConf = vhostConfs.olsMasterMainConf
+                currentConf = currentConf.replace('{virtualHostName}', virtualHostName)
+                writeDataToFile.write(currentConf)
+
+                writeDataToFile.close()
+
+                return [1,"None"]
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + "223 [IO Error with main config file [createConfigInMainVirtualHostFile]]")
+                return [0,"223 [IO Error with main config file [createConfigInMainVirtualHostFile]]"]
+        else:
+            try:
+                writeDataToFile = open("/usr/local/lsws/conf/httpd.conf", 'a')
+                configFile = 'Include /usr/local/lsws/conf/vhosts/' + virtualHostName + '/vhost.conf\n'
+                writeDataToFile.writelines(configFile)
+                writeDataToFile.close()
+
+                writeDataToFile.close()
+                return [1, "None"]
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + "223 [IO Error with main config file [createConfigInMainVirtualHostFile]]")
+                return [0, "223 [IO Error with main config file [createConfigInMainVirtualHostFile]]"]
+
+    @staticmethod
+    def _wait_for_php_workers(externalApp, account):
+        # Detached PHP can outlive the vhost's graceful reload. Do not race
+        # userdel against those workers, or terminate unrelated user jobs.
+        import re
+        import stat
+        import time
+
+        def identity(entry):
+            return (entry.pw_name, entry.pw_uid, entry.pw_gid, entry.pw_dir)
+
+        expected = identity(account)
+        if (expected[0] != externalApp or expected[1] <= 0 or expected[2] <= 0
+                or not os.path.isabs(expected[3])):
+            raise RuntimeError('Cannot verify the website Unix account identity.')
+
+        def check_identity():
+            if identity(pwd.getpwnam(externalApp)) != expected:
+                raise RuntimeError('Website Unix account changed while waiting for PHP workers.')
+
+        def status_fields(path):
+            with open(path + '/status') as source:
+                fields = dict(line.split(':', 1) for line in source if ':' in line)
+            uids = tuple(int(value) for value in fields['Uid'].split())
+            if len(uids) != 4:
+                raise RuntimeError('Cannot verify process user IDs before account deletion.')
+            return fields, uids
+
+        def process_start(path):
+            with open(path + '/stat') as source:
+                raw = source.read()
+            head, separator, tail = raw.rpartition(')')
+            columns = tail.split()
+            if (not separator or head.split(' ', 1)[0] != path.rsplit('/', 1)[1]
+                    or len(columns) < 20 or not columns[19].isdigit()):
+                raise RuntimeError('Cannot verify process start time before account deletion.')
+            return int(columns[19])
+
+        deadline = time.monotonic() + 60
+        while True:
+            check_identity()
+            busy = False
+            for pid in os.listdir('/proc'):
+                if not pid.isdigit():
+                    continue
+                path = '/proc/' + pid
+                try:
+                    started = process_start(path)
+                    fields, uids = status_fields(path)
+                    if expected[1] not in uids:
+                        continue
+                    gids = tuple(int(value) for value in fields['Gid'].split())
+                    if uids != (expected[1],) * 4 or gids != (expected[2],) * 4:
+                        raise RuntimeError('Website Unix account has a process with unexpected user or group IDs.')
+                    executable = os.readlink(path + '/exe')
+                    if not re.fullmatch(r'/usr/local/lsws/lsphp[0-9]{2,3}/bin/lsphp', executable):
+                        raise RuntimeError('Website Unix account has a process other than a normal PHP worker.')
+                    running = os.stat(path + '/exe')
+                    installed = os.stat(executable)
+                    if (not stat.S_ISREG(running.st_mode) or running.st_uid != 0
+                            or running.st_mode & 0o022 or not running.st_mode & 0o111
+                            or (running.st_dev, running.st_ino) != (installed.st_dev, installed.st_ino)):
+                        raise RuntimeError('Cannot verify the website PHP worker executable.')
+                    current_fields, current_uids = status_fields(path)
+                    if (current_uids != uids or current_fields['Gid'] != fields['Gid']
+                            or process_start(path) != started):
+                        raise RuntimeError('Website process identity changed during account deletion.')
+                    busy = True
+                except FileNotFoundError:
+                    # A process may exit between proc reads. Missing metadata
+                    # on a still-existing process must not be treated as idle.
+                    try:
+                        os.stat(path)
+                    except FileNotFoundError:
+                        continue
+                    raise RuntimeError('Cannot verify live process metadata before account deletion.')
+            check_identity()
+            if not busy:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError('Website PHP workers are still running after 60 seconds; Unix account retained.')
+            time.sleep(min(1, remaining))
+
+
+    @staticmethod
+    def _delete_unix_account(externalApp, userCommand):
+        # The privileged command transport can report success after userdel
+        # fails. Verify the requested state before reporting full deletion.
+        for kind, lookup, command in (
+                ('user', pwd.getpwnam, userCommand),
+                ('group', grp.getgrnam, 'groupdel %s' % externalApp)):
+            try:
+                account = lookup(externalApp)
+            except KeyError:
+                continue
+            if kind == 'user':
+                vhost._wait_for_php_workers(externalApp, account)
+            ProcessUtilities.executioner(command)
+            try:
+                lookup(externalApp)
+            except KeyError:
+                continue
+            raise RuntimeError('Website Unix %s %s remains after cleanup; some website resources may already be removed.'
+                               % (kind, externalApp))
+        return 1
+
+    @staticmethod
+    def deleteVirtualHostConfigurations(virtualHostName):
+        if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+            try:
+
+                ## Deleting master conf
+                numberOfSites = str(Websites.objects.count() + ChildDomains.objects.count())
+                if vhost.deleteCoreConf(virtualHostName, numberOfSites) == 0:
+                    raise RuntimeError('Failed to remove the website configuration.')
+
+                delWebsite = Websites.objects.get(domain=virtualHostName)
+                externalApp = delWebsite.externalApp
+
+
+                ##
+
+                databases = Databases.objects.filter(website=delWebsite)
+
+                childDomains = delWebsite.childdomains_set.all()
+
+                ## Deleting child domains
+
+                for items in childDomains:
+                    numberOfSites = Websites.objects.count() + ChildDomains.objects.count()
+                    if vhost.deleteCoreConf(items.domain, numberOfSites) == 0:
+                        raise RuntimeError('Failed to remove a child website configuration.')
+
+                    ### Delete ACME Folder
+
+                    if os.path.exists('/root/.acme.sh/%s' % (items.domain)):
+                        shutil.rmtree('/root/.acme.sh/%s' % (items.domain))
+
+                ## Child check, to make sure no database entires are being deleted from child node
+
+                if ACLManager.FindIfChild() == 0:
+
+                    ### Delete WordPress Sites and Staging Sites first
+                    try:
+                        wpSites = WPSites.objects.filter(owner=delWebsite)
+                        for wpSite in wpSites:
+                            # Delete any staging sites associated with this WP site
+                            stagingSites = WPStaging.objects.filter(wpsite=wpSite)
+                            for staging in stagingSites:
+                                staging.delete()
+                                logging.FoxitiCPLogFileWriter.writeToFile(f"Deleted staging site record: {staging.id}")
+                            # Delete the WP site itself
+                            wpSite.delete()
+                            logging.FoxitiCPLogFileWriter.writeToFile(f"Deleted WP site: {wpSite.id}")
+                    except Exception as msg:
+                        logging.FoxitiCPLogFileWriter.writeToFile(f"Error cleaning up WP/Staging sites: {str(msg)}")
+
+                    ### Delete Docker Sites first before website deletion
+
+                    if os.path.exists('/home/docker/%s' % (virtualHostName)):
+                        try:
+                            dockerSite = DockerSites.objects.get(admin__domain=virtualHostName)
+                            passdata = {
+                                "domain": virtualHostName,
+                                "name": dockerSite.SiteName
+                            }
+                            from plogical.DockerSites import Docker_Sites
+                            da = Docker_Sites(None, passdata)
+                            da.DeleteDockerApp()
+                            dockerSite.delete()
+                        except:
+                            # If anything fails in Docker cleanup, at least remove the directory
+                            shutil.rmtree('/home/docker/%s' % (virtualHostName))
+
+                    for items in databases:
+                        if mysqlUtilities.deleteDatabase(items.dbName, items.dbUser) != 1:
+                            raise RuntimeError('Failed to remove a website database; panel metadata retained.')
+
+                    delWebsite.delete()
+
+                    ## Deleting DNS Zone if there is any.
+
+                    DNS.deleteDNSZone(virtualHostName)
+
+                if not os.path.exists(vhost.redisConf):
+                    installUtilities.installUtilities.reStartLiteSpeed()
+
+                ## Delete mail accounts
+
+                command = "rm -rf /home/vmail/" + virtualHostName
+                subprocess.call(shlex.split(command))
+
+                ##
+
+                if ProcessUtilities.decideDistro() == ProcessUtilities.centos or ProcessUtilities.decideDistro() == ProcessUtilities.cent8:
+                    command = 'userdel -r -f %s' % (externalApp)
+                else:
+                    command = 'deluser %s' % (externalApp)
+
+                vhost._delete_unix_account(externalApp, command)
+
+                ## Remove git conf folder if present
+
+                gitPath = '/home/foxitipanel/git/%s' % (virtualHostName)
+
+                if os.path.exists(gitPath):
+                    shutil.rmtree(gitPath)
+
+                ## Remove resource limits for this user (OLS cgroups)
+                try:
+                    from plogical.resourceLimits import resource_manager
+                    resource_manager.remove_user_limits(externalApp)
+                except Exception as e:
+                    logging.FoxitiCPLogFileWriter.writeToFile(f"Warning: Failed to remove resource limits for user {externalApp}: {str(e)}")
+
+                ### Delete Acme folder
+
+                if os.path.exists('/root/.acme.sh/%s' % (virtualHostName)):
+                    shutil.rmtree('/root/.acme.sh/%s' % (virtualHostName))
+
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [Not able to remove virtual host configuration from main configuration file.]")
+                return 0
+            return 1
+        else:
+            try:
+                ## Deleting master conf
+                numberOfSites = str(Websites.objects.count() + ChildDomains.objects.count())
+                if vhost.deleteCoreConf(virtualHostName, numberOfSites) == 0:
+                    raise RuntimeError('Failed to remove the website configuration.')
+
+                delWebsite = Websites.objects.get(domain=virtualHostName)
+                externalApp = delWebsite.externalApp
+
+                ## Cagefs
+
+                command = '/usr/sbin/cagefsctl --disable %s' % (delWebsite.externalApp)
+                ProcessUtilities.normalExecutioner(command)
+
+                databases = Databases.objects.filter(website=delWebsite)
+
+                childDomains = delWebsite.childdomains_set.all()
+
+                ## Deleting child domains
+
+                for items in childDomains:
+                    numberOfSites = Websites.objects.count() + ChildDomains.objects.count()
+                    if vhost.deleteCoreConf(items.domain, numberOfSites) == 0:
+                        raise RuntimeError('Failed to remove a child website configuration.')
+
+
+                ## child check to make sure no database entires are being deleted from child server
+
+                if ACLManager.FindIfChild() == 0:
+                    ### Delete WordPress Sites and Staging Sites first
+                    try:
+                        wpSites = WPSites.objects.filter(owner=delWebsite)
+                        for wpSite in wpSites:
+                            # Delete any staging sites associated with this WP site
+                            stagingSites = WPStaging.objects.filter(wpsite=wpSite)
+                            for staging in stagingSites:
+                                staging.delete()
+                                logging.FoxitiCPLogFileWriter.writeToFile(f"Deleted staging site record: {staging.id}")
+                            # Delete the WP site itself
+                            wpSite.delete()
+                            logging.FoxitiCPLogFileWriter.writeToFile(f"Deleted WP site: {wpSite.id}")
+                    except Exception as msg:
+                        logging.FoxitiCPLogFileWriter.writeToFile(f"Error cleaning up WP/Staging sites: {str(msg)}")
+
+                    for items in databases:
+                        if mysqlUtilities.deleteDatabase(items.dbName, items.dbUser) != 1:
+                            raise RuntimeError('Failed to remove a website database; panel metadata retained.')
+
+                    delWebsite.delete()
+
+                    ## Deleting DNS Zone if there is any.
+
+                    DNS.deleteDNSZone(virtualHostName)
+
+                installUtilities.installUtilities.reStartLiteSpeed()
+
+                ## Delete mail accounts
+
+                command = "rm -rf /home/vmail/" + virtualHostName
+                subprocess.call(shlex.split(command))
+
+                ##
+
+                if ProcessUtilities.decideDistro() == ProcessUtilities.centos or ProcessUtilities.decideDistro() == ProcessUtilities.cent8:
+                    command = 'userdel -r -f %s' % (externalApp)
+                else:
+                    command = 'deluser %s' % (externalApp)
+
+                vhost._delete_unix_account(externalApp, command)
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [Not able to remove virtual host configuration from main configuration file.]")
+                return 0
+            return 1
+
+    @staticmethod
+    def deleteCoreConf(virtualHostName, numberOfSites):
+        if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+            try:
+
+                virtualHostPath = "/home/" + virtualHostName
+                if os.path.exists(virtualHostPath):
+                    shutil.rmtree(virtualHostPath)
+
+                confPath = vhost.Server_root + "/conf/vhosts/" + virtualHostName
+                if os.path.exists(confPath):
+                    shutil.rmtree(confPath)
+
+                data = open("/usr/local/lsws/conf/httpd_config.conf").readlines()
+
+                writeDataToFile = open("/usr/local/lsws/conf/httpd_config.conf", 'w')
+
+                check = 1
+                sslCheck = 1
+
+                for items in data:
+                    if numberOfSites == 1:
+                        if (items.find(' ' + virtualHostName) > -1 and items.find("  map                     " + virtualHostName) > -1):
+                            continue
+                        if (items.find(' ' + virtualHostName) > -1 and (items.find("virtualHost") > -1 or items.find("virtualhost") > -1)):
+                            check = 0
+                        if items.find("listener") > -1 and items.find("SSL") > -1:
+                            sslCheck = 0
+                        if (check == 1 and sslCheck == 1):
+                            writeDataToFile.writelines(items)
+                        if (items.find("}") > -1 and (check == 0 or sslCheck == 0)):
+                            check = 1
+                            sslCheck = 1
+                    else:
+                        if (items.find(' ' + virtualHostName) > -1 and items.find("  map                     " + virtualHostName) > -1):
+                            continue
+                        if (items.find(' ' + virtualHostName) > -1 and (items.find("virtualHost") > -1 or items.find("virtualhost") > -1)):
+                            check = 0
+                        if (check == 1):
+                            writeDataToFile.writelines(items)
+                        if (items.find("}") > -1 and check == 0):
+                            check = 1
+
+                ## Delete Apache Conf
+
+                ApacheVhost.DeleteApacheVhost(virtualHostName)
+
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [Not able to remove virtual host configuration from main configuration file.]")
+                return 0
+            return 1
+        else:
+            virtualHostPath = "/home/" + virtualHostName
+            try:
+                shutil.rmtree(virtualHostPath)
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [Not able to remove virtual host directory from /home continuing..]")
+
+            if not os.path.exists(vhost.redisConf):
+                try:
+                    confPath = vhost.Server_root + "/conf/vhosts/" + virtualHostName
+                    shutil.rmtree(confPath)
+                except BaseException as msg:
+                    logging.FoxitiCPLogFileWriter.writeToFile(
+                        str(msg) + " [Not able to remove virtual host configuration directory from /conf ]")
+
+                try:
+                    data = open("/usr/local/lsws/conf/httpd.conf").readlines()
+
+                    writeDataToFile = open("/usr/local/lsws/conf/httpd.conf", 'w')
+
+                    for items in data:
+                        if items.find('/' + virtualHostName + '/') > -1:
+                            pass
+                        else:
+                            writeDataToFile.writelines(items)
+
+                    writeDataToFile.close()
+
+                except BaseException as msg:
+                    logging.FoxitiCPLogFileWriter.writeToFile(
+                        str(msg) + " [Not able to remove virtual host configuration from main configuration file.]")
+                    return 0
+                return 1
+            else:
+                command = 'redis-cli delete "vhost:%s"' % (virtualHostName)
+                ProcessUtilities.executioner(command)
+
+                command = 'redis-cli delete "vhost:www.%s"' % (virtualHostName)
+                ProcessUtilities.executioner(command)
+
+    @staticmethod
+    def checkIfVirtualHostExists(virtualHostName):
+        if os.path.exists("/home/" + virtualHostName):
+            return 1
+        return 0
+
+    @staticmethod
+    def changePHP(vhFile, phpVersion):
+
+        from pathlib import Path
+        domain = vhFile.split('/')[6]
+        print(domain)
+        try:
+            website = Websites.objects.get(domain=domain)
+            externalApp = website.externalApp
+        except:
+            child = ChildDomains.objects.get(domain=domain)
+            externalApp = child.master.externalApp
+        #HomePath = website.externalApp
+        virtualHostUser = externalApp
+
+        logging.FoxitiCPLogFileWriter.writeToFile(f"PHP version before making sure its available or not: {phpVersion} and vhFile: {vhFile}")
+
+        from plogical.phpUtilities import phpUtilities
+
+        phpVersion = phpUtilities.FindIfSaidPHPIsAvaiableOtherwiseMaketheNextOneAvailableToUse(None, phpVersion)
+
+        phpDetachUpdatePath = '/home/%s/.lsphp_restart.txt' % (vhFile.split('/')[-2])
+        if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+            try:
+                if ApacheVhost.changePHP(phpVersion, vhFile) == 0:
+                    data = open(vhFile, "r").readlines()
+
+                    php = PHPManager.getPHPString(phpVersion)
+
+                    if not os.path.exists("/usr/local/lsws/lsphp" + str(php) + "/bin/lsphp"):
+                        print(0, 'This PHP version is not available on your foxitiPanel.')
+                        return [0, "[This PHP version is not available on your foxitiPanel. [changePHP]"]
+
+                    writeDataToFile = open(vhFile, "w")
+
+                    path = "  path                    /usr/local/lsws/lsphp" + str(php) + "/bin/lsphp\n"
+
+                    logging.FoxitiCPLogFileWriter.writeToFile(f"PHP String to be written {path}")
+
+                    for items in data:
+                        if items.find("/usr/local/lsws/lsphp") > -1 and items.find("path") > -1:
+                            writeDataToFile.writelines(path)
+                        else:
+                            writeDataToFile.writelines(items)
+
+                    writeDataToFile.close()
+
+                    command = 'sudo -u %s touch %s' % (virtualHostUser, phpDetachUpdatePath)
+                    ProcessUtilities.normalExecutioner(command)
+
+                    installUtilities.installUtilities.reStartLiteSpeed()
+                    try:
+                        command = 'sudo -u %s rm -f %s' % (virtualHostUser, phpDetachUpdatePath)
+                        ProcessUtilities.normalExecutioner(command)
+                    except:
+                        pass
+                else:
+                    logging.FoxitiCPLogFileWriter.writeToFile('apache vhost 1')
+
+                    php = PHPManager.getPHPString(phpVersion)
+
+                    phpService = ApacheVhost.DecideFPMServiceName(phpVersion)
+
+                    command = f"systemctl restart {phpService}"
+                    ProcessUtilities.normalExecutioner(command)
+
+                print("1,None")
+                return 1,'None'
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [IO Error with per host config file [changePHP]")
+                print(0,str(msg))
+                return [0, str(msg) + " [IO Error with per host config file [changePHP]"]
+        else:
+            try:
+                if not os.path.exists(vhost.redisConf):
+                    data = open(vhFile, "r").readlines()
+
+                    php = PHPManager.getPHPString(phpVersion)
+
+                    if not os.path.exists("/usr/local/lsws/lsphp" + str(php) + "/bin/lsphp"):
+                        print(0, 'This PHP version is not available on your foxitiPanel.')
+                        return [0, "[This PHP version is not available on your foxitiPanel. [changePHP]"]
+
+                    writeDataToFile = open(vhFile, "w")
+
+                    finalString = '    AddHandler application/x-httpd-php' + str(php) + ' .php\n'
+
+                    for items in data:
+                        if items.find("AddHandler application/x-httpd") > -1:
+                            writeDataToFile.writelines(finalString)
+                        else:
+                            writeDataToFile.writelines(items)
+
+                    writeDataToFile.close()
+
+                    writeToFile = open(phpDetachUpdatePath, 'w')
+                    writeToFile.close()
+
+                    installUtilities.installUtilities.reStartLiteSpeed()
+                    try:
+                        os.remove(phpDetachUpdatePath)
+                    except:
+                        pass
+                else:
+                    command = 'redis-cli get "vhost:%s"' % (vhFile.split('/')[-2])
+                    configData = ProcessUtilities.outputExecutioner(command)
+
+                    import re
+                    configData = re.sub(r'"phpVersion": .*,', '"phpVersion": %s,' % (phpVersion.lstrip('PHP ')), configData)
+
+                    command = "redis-cli set vhost:%s '%s'" % (vhFile.split('/')[-2], configData)
+                    ProcessUtilities.executioner(command)
+
+
+                print("1,None")
+                return 1, 'None'
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [IO Error with per host config file [changePHP]]")
+                print(0, str(msg))
+                return [0, str(msg) + " [IO Error with per host config file [changePHP]]"]
+
+    @staticmethod
+    def addRewriteRules(virtualHostName, fileName=None):
+        try:
+            pass
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [IO Error with per host config file [changePHP]]")
+            return 0
+
+        return 1
+
+    @staticmethod
+    def ensureSensitiveFileDenials(vhFile):
+        try:
+            from plogical.sensitiveFileProtection import protect_vhost_file
+            return protect_vhost_file(vhFile)
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(
+                str(msg) + " [ensureSensitiveFileDenials]")
+            return -1
+
+    @staticmethod
+    def checkIfRewriteEnabled(data):
+        try:
+            for items in data:
+                if items.find(".htaccess") > -1:
+                    return 1
+            return 0
+
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(
+                str(msg) + " [IO Error with per host config file [checkIfRewriteEnabled]]")
+            return 0
+
+    @staticmethod
+    def findDomainBW(domainName, totalAllowed):
+        try:
+            path = "/home/" + domainName + "/logs/" + domainName + ".access_log"
+
+            if not os.path.exists("/home/" + domainName + "/logs"):
+                print("0,0")
+                return 0,0
+
+            bwmeta = "/home/foxitipanel/%s.bwmeta" % (domainName)
+
+            if not os.path.exists(path):
+                print("0,0")
+                return 0, 0
+
+            if os.path.exists(bwmeta):
+                try:
+                    data = open(bwmeta).readlines()
+                    currentUsed = int(data[0].strip("\n"))
+
+                    inMB = int(float(currentUsed) / (1024.0 * 1024.0))
+
+                    if totalAllowed == 0:
+                        totalAllowed = 999999
+
+                    percentage = float(100) / float(totalAllowed)
+                    percentage = float(percentage) * float(inMB)
+                except:
+                    print("0,0")
+                    return 0, 0
+
+                if percentage > 100.0:
+                    percentage = 100
+
+                print(str(inMB) + "," + str(percentage))
+                return str(inMB), str(percentage)
+            else:
+                print("0,0")
+                return 0, 0
+        except OSError as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [findDomainBW]")
+            print("0,0")
+            return 0, 0
+        except ValueError as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [findDomainBW]")
+            print("0,0")
+            return 0, 0
+
+    @staticmethod
+    def permissionControl(path):
+        try:
+            command = 'sudo chown -R  foxitipanel:foxitipanel ' + path
+            cmd = shlex.split(command)
+            res = subprocess.call(cmd)
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg))
+
+    @staticmethod
+    def leaveControl(path):
+        try:
+            command = 'sudo chown -R  root:root ' + path
+
+            cmd = shlex.split(command)
+
+            res = subprocess.call(cmd)
+
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg))
+
+    @staticmethod
+    def checkIfAliasExists(aliasDomain):
+        try:
+            alias = aliasDomains.objects.get(aliasDomain=aliasDomain)
+            return 1
+        except BaseException as msg:
+            return 0
+
+    @staticmethod
+    def checkIfSSLAliasExists(data, aliasDomain):
+        try:
+            for items in data:
+                if items.strip(',').strip('\n') == aliasDomain:
+                    return 1
+            return 0
+
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + "  [checkIfSSLAliasExists]")
+            return 1
+
+    @staticmethod
+    def createAliasSSLMap(confPath, masterDomain, aliasDomain):
+        try:
+
+            data = open(confPath, 'r').readlines()
+            writeToFile = open(confPath, 'w')
+            sslCheck = 0
+
+
+            for items in data:
+                if (items.find("listener SSL") > -1):
+                    sslCheck = 1
+                if items.find(masterDomain) > -1 and items.find('map') > -1 and sslCheck == 1:
+                    data = [_f for _f in items.split(" ") if _f]
+                    if data[1] == masterDomain:
+                        if vhost.checkIfSSLAliasExists(data, aliasDomain) == 0:
+                            writeToFile.writelines(items.rstrip('\n') + ", " + aliasDomain + "\n")
+                            sslCheck = 0
+                        else:
+                            writeToFile.writelines(items)
+                else:
+                    writeToFile.writelines(items)
+
+            writeToFile.close()
+            installUtilities.installUtilities.reStartLiteSpeed()
+
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + "  [createAliasSSLMap]")
+
+    ## Child Domain Functions
+
+    @staticmethod
+    def finalizeDomainCreation(virtualHostUser, path):
+        try:
+
+            ACLManager.CreateSecureDir()
+
+            RanddomFileName = str(randint(1000, 9999))
+
+            FullPath = '%s/%s' % ('/usr/local/FoxitiCP/tmp', RanddomFileName)
+
+            FNULL = open(os.devnull, 'w')
+
+            #shutil.copy("/usr/local/FoxitiCP/index.html", path + "/index.html")
+
+            shutil.copy("/usr/local/FoxitiCP/index.html", FullPath)
+
+            command = "chown " + virtualHostUser + ":" + virtualHostUser + " " + FullPath
+            cmd = shlex.split(command)
+            subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+            command = 'sudo -u %s cp %s %s/index.html' % (virtualHostUser, FullPath, path)
+            ProcessUtilities.normalExecutioner(command)
+
+            os.remove(FullPath)
+
+            vhostPath = vhost.Server_root + "/conf/vhosts"
+            command = "chown -R " + "lsadm" + ":" + "lsadm" + " " + vhostPath
+            cmd = shlex.split(command)
+            subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+        except BaseException as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [finalizeDomainCreation]")
+
+    @staticmethod
+    def createDirectoryForDomain(masterDomain, domain, phpVersion, path, administratorEmail, virtualHostUser,
+                                 openBasedir, memSoftLimit=2047, memHardLimit=2047, maxConnections=10,
+                                 procSoftLimit=400, procHardLimit=500):
+
+        FNULL = open(os.devnull, 'w')
+
+        confPath = vhost.Server_root + "/conf/vhosts/" + domain
+        completePathToConfigFile = confPath + "/vhost.conf"
+
+        try:
+
+            command = 'sudo -u %s mkdir %s' % (virtualHostUser, path)
+            ProcessUtilities.normalExecutioner(command)
+
+            if ProcessUtilities.decideDistro() == ProcessUtilities.centos or ProcessUtilities.decideDistro() == ProcessUtilities.cent8:
+                groupName = 'nobody'
+            else:
+                groupName = 'nogroup'
+
+            command = 'sudo -g %s -u %s chown %s:%s %s' % (groupName, virtualHostUser, virtualHostUser, groupName, path)
+            ProcessUtilities.normalExecutioner(command)
+
+
+            command = "sudo -u %s chmod 750 %s" % (virtualHostUser, path)
+            cmd = shlex.split(command)
+            subprocess.call(cmd, stdout=FNULL, stderr=subprocess.STDOUT)
+
+        except OSError as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(
+                str(msg) + "329 [Not able to create directories for virtual host [createDirectoryForDomain]]")
+
+        try:
+            ## For configuration files permissions will be changed later globally.
+            os.makedirs(confPath)
+        except OSError as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(
+                str(msg) + "335 [Not able to create directories for virtual host [createDirectoryForDomain]]")
+            #return [0, "[344 Not able to directories for virtual host [createDirectoryForDomain]]"]
+
+        try:
+            ## For configuration files permissions will be changed later globally.
+            file = open(completePathToConfigFile, "w+")
+        except IOError as msg:
+            logging.FoxitiCPLogFileWriter.writeToFile(str(msg) + " [createDirectoryForDomain]]")
+            #return [0, "[351 Not able to directories for virtual host [createDirectoryForDomain]]"]
+
+        if vhost.perHostDomainConf(path, masterDomain, domain, completePathToConfigFile,
+                                   administratorEmail, phpVersion, virtualHostUser, openBasedir,
+                                   memSoftLimit, memHardLimit, maxConnections, procSoftLimit, procHardLimit) == 1:
+            return [1, "None"]
+        else:
+            pass
+            #return [0, "[359 Not able to create per host virtual configurations [createDirectoryForDomain]"]
+
+        return [1, "None"]
+
+    @staticmethod
+    def perHostDomainConf(path, masterDomain, domain, vhFile, administratorEmail, phpVersion, virtualHostUser, openBasedir,
+                         memSoftLimit=2047, memHardLimit=2047, maxConnections=10,
+                         procSoftLimit=400, procHardLimit=500):
+        if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+            try:
+                php = PHPManager.getPHPString(phpVersion)
+                externalApp = virtualHostUser + str(randint(1000, 9999))
+
+                currentConf = vhostConfs.olsChildConf
+                currentConf = currentConf.replace('{path}', path)
+                currentConf = currentConf.replace('{masterDomain}', masterDomain)
+                currentConf = currentConf.replace('{adminEmails}', administratorEmail)
+                currentConf = currentConf.replace('{externalApp}', externalApp)
+                currentConf = currentConf.replace('{externalAppMaster}', virtualHostUser)
+                currentConf = currentConf.replace('{php}', php)
+                currentConf = currentConf.replace('{adminEmails}', administratorEmail)
+                currentConf = currentConf.replace('{php}', php)
+
+                # Replace resource limits (child domains share parent's limits)
+                currentConf = currentConf.replace('{memSoftLimit}', str(memSoftLimit))
+                currentConf = currentConf.replace('{memHardLimit}', str(memHardLimit))
+                currentConf = currentConf.replace('{maxConnections}', str(maxConnections))
+                currentConf = currentConf.replace('{procSoftLimit}', str(procSoftLimit))
+                currentConf = currentConf.replace('{procHardLimit}', str(procHardLimit))
+
+                if openBasedir == 1:
+                    currentConf = currentConf.replace('{open_basedir}', 'php_admin_value open_basedir "/tmp:$VH_ROOT"')
+                else:
+                    currentConf = currentConf.replace('{open_basedir}', '')
+
+                confFile = open(vhFile, "w+")
+                confFile.write(currentConf)
+                confFile.close()
+
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [IO Error with per host config file [perHostDomainConf]]")
+                return 0
+            return 1
+        else:
+            try:
+
+                if not os.path.exists(vhost.redisConf):
+                    confFile = open(vhFile, "w+")
+                    php = PHPManager.getPHPString(phpVersion)
+
+                    currentConf = vhostConfs.lswsChildConf
+
+                    currentConf = currentConf.replace('{virtualHostName}', domain)
+                    currentConf = currentConf.replace('{masterDomain}', masterDomain)
+                    currentConf = currentConf.replace('{administratorEmail}', administratorEmail)
+                    currentConf = currentConf.replace('{externalApp}', virtualHostUser)
+                    currentConf = currentConf.replace('{path}', path)
+                    currentConf = currentConf.replace('{php}', php)
+
+                    confFile.write(currentConf)
+
+                    confFile.close()
+
+                else:
+
+                    ## Non www
+
+                    currentConf = vhostConfs.lswsRediConfChild
+
+                    currentConf = currentConf.replace('{virtualHostName}', domain)
+                    currentConf = currentConf.replace('{masterDomain}', masterDomain)
+                    currentConf = currentConf.replace('{administratorEmail}', administratorEmail)
+                    currentConf = currentConf.replace('{path}', path)
+                    currentConf = currentConf.replace('{externalApp}', virtualHostUser)
+                    currentConf = currentConf.replace('{php}', phpVersion.lstrip('PHP '))
+                    currentConf = currentConf.replace('{uid}', str(pwd.getpwnam(virtualHostUser).pw_uid))
+                    currentConf = currentConf.replace('{gid}', str(grp.getgrnam(virtualHostUser).gr_gid))
+
+                    command = 'redis-cli set %s' % (currentConf)
+                    ProcessUtilities.executioner(command)
+
+                    ## www
+
+                    currentConf = vhostConfs.lswsRediConfChildWWW
+
+                    currentConf = currentConf.replace('{virtualHostName}', 'www.%s' % (domain))
+                    currentConf = currentConf.replace('{masterDomain}', masterDomain)
+                    currentConf = currentConf.replace('{administratorEmail}', administratorEmail)
+                    currentConf = currentConf.replace('{path}', path)
+                    currentConf = currentConf.replace('{externalApp}', virtualHostUser)
+                    currentConf = currentConf.replace('{php}', phpVersion.lstrip('PHP '))
+                    currentConf = currentConf.replace('{uid}', str(pwd.getpwnam(virtualHostUser).pw_uid))
+                    currentConf = currentConf.replace('{gid}', str(grp.getgrnam(virtualHostUser).gr_gid))
+
+                    command = 'redis-cli set %s' % (currentConf)
+                    ProcessUtilities.executioner(command)
+
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + " [IO Error with per host config file [perHostDomainConf]]")
+                return 0
+            return 1
+
+
+    @staticmethod
+    def createConfigInMainDomainHostFile(domain, masterDomain):
+        if ProcessUtilities.decideServer() == ProcessUtilities.OLS:
+            try:
+
+                if vhost.createNONSSLMapEntry(domain) == 0:
+                    return [0, "Failed to create NON SSL Map Entry [createConfigInMainVirtualHostFile]"]
+
+                writeDataToFile = open("/usr/local/lsws/conf/httpd_config.conf", 'a')
+
+                currentConf = vhostConfs.olsChildMainConf
+                currentConf = currentConf.replace('{virtualHostName}', domain)
+                currentConf = currentConf.replace('{masterDomain}', masterDomain)
+                writeDataToFile.write(currentConf)
+
+                writeDataToFile.close()
+
+                return [1, "None"]
+
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + "223 [IO Error with main config file [createConfigInMainDomainHostFile]]")
+                return [0, "223 [IO Error with main config file [createConfigInMainDomainHostFile]]"]
+        else:
+            try:
+                writeDataToFile = open("/usr/local/lsws/conf/httpd.conf", 'a')
+                configFile = 'Include /usr/local/lsws/conf/vhosts/' + domain + '/vhost.conf\n'
+                writeDataToFile.writelines(configFile)
+                writeDataToFile.close()
+                return [1, "None"]
+            except BaseException as msg:
+                logging.FoxitiCPLogFileWriter.writeToFile(
+                    str(msg) + "223 [IO Error with main config file [createConfigInMainDomainHostFile]]")
+                return [0, "223 [IO Error with main config file [createConfigInMainDomainHostFile]]"]

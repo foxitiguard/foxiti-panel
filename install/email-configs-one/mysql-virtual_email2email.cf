@@ -1,0 +1,5 @@
+user = foxitipanel
+password = SLTUIUxqhulwsh
+dbname = foxitipanel
+query = SELECT email FROM e_users WHERE email='%s'
+hosts = localhost

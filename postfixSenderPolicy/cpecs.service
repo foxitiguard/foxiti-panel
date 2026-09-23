@@ -1,0 +1,12 @@
+[Unit]
+Description = foxitiPanel Email Policy Control Daemon
+
+[Service]
+Type=forking
+ExecStart = /usr/local/FoxitiCP/postfixSenderPolicy/policyCTRL.py start
+ExecStop = /usr/local/FoxitiCP/postfixSenderPolicy/policyCTRL.py stop
+Restart = /usr/local/FoxitiCP/postfixSenderPolicy/policyCTRL.py restart
+Restart=on-abnormal
+
+[Install]
+WantedBy=default.target

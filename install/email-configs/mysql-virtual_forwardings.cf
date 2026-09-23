@@ -1,0 +1,5 @@
+user = foxitipanel
+password = 1qaz@9xvps
+dbname = foxitipanel
+query = SELECT destination FROM e_forwardings WHERE source='%s'
+hosts = 127.0.0.1:3307

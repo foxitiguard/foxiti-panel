@@ -1,0 +1,5 @@
+[foxitiPanel]
+name=foxitiPanel
+baseurl=https://rep8.foxitipanel.net/
+gpgkey=https://rep.foxitipanel.net/RPM-GPG-KEY-foxitipanel
+gpgcheck=1

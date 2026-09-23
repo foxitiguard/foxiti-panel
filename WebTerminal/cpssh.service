@@ -1,0 +1,12 @@
+[Unit]
+Description = foxitiPanel SSH Websocket Daemon
+
+[Service]
+Type=forking
+ExecStart = /usr/local/FoxitiCP/bin/python /usr/local/FoxitiCP/WebTerminal/servCTRL.py start
+ExecStop = /usr/local/FoxitiCP/bin/python /usr/local/FoxitiCP/WebTerminal/servCTRL.py stop
+Restart = /usr/local/FoxitiCP/bin/python /usr/local/FoxitiCP/WebTerminal/servCTRL.py restart
+Restart=on-abnormal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,5 @@
+user = foxitipanel
+password = SLTUIUxqhulwsh
+dbname = foxitipanel
+query = SELECT destination FROM e_forwardings WHERE source='%s'
+hosts = localhost

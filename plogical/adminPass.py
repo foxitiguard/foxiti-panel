@@ -1,0 +1,84 @@
+#!/usr/local/FoxitiCP/bin/python
+import os.path
+import sys
+import django
+sys.path.append('/usr/local/FoxitiCP')
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "FoxitiCP.settings")
+django.setup()
+import argparse
+from loginSystem.models import Administrator, ACL
+from plogical import hashPassword
+from plogical.acl import ACLManager
+from packages.models import Package
+from baseTemplate.models import version
+from foxitipanel_version import BUILD, VERSION
+from plogical.securityUtils import ensure_api_token, is_current_api_token, normalize_api_token
+
+if not os.geteuid() == 0:
+    sys.exit("\nOnly root can run this script\n")
+
+def main():
+
+    parser = argparse.ArgumentParser(description='Reset admin user password!')
+    parser.add_argument('--password', help='New Password')
+    parser.add_argument('--api', help='Enable/Disable API')
+    parser.add_argument('--api-token', help='Set a pre-generated versioned API token while enabling API access')
+    args = parser.parse_args()
+
+    if args.api != None:
+        if args.api == '1':
+            admin = Administrator.objects.get(userName="admin")
+            if args.api_token:
+                if not is_current_api_token(args.api_token):
+                    parser.error('--api-token must use the cp_api_v1_ format')
+                admin.token = 'Basic %s' % normalize_api_token(args.api_token)
+            else:
+                ensure_api_token(admin)
+            admin.api = 1
+            admin.save()
+            print("API Enabled.")
+            print("API Token: %s" % admin.token)
+        else:
+            admin = Administrator.objects.get(userName="admin")
+            admin.api = 0
+            admin.token = ''
+            admin.save()
+            print("API Disabled.")
+    else:
+
+        adminPass = args.password
+
+        numberOfAdministrator = Administrator.objects.count()
+        if numberOfAdministrator == 0:
+
+            ACLManager.createDefaultACLs()
+            acl = ACL.objects.get(name='admin')
+            token = hashPassword.generateToken('admin', adminPass)
+
+            email = 'admin@foxitipanel.net'
+            admin = Administrator(userName="admin", password=hashPassword.hash_password(adminPass), type=1, email=email,
+                                  firstName="Cyber", lastName="Panel", acl=acl, token=token)
+            admin.save()
+
+            vers = version(currentVersion=VERSION, build=BUILD)
+            vers.save()
+
+            package = Package(admin=admin, packageName="Default", diskSpace=1000,
+                              bandwidth=1000, ftpAccounts=1000, dataBases=1000,
+                              emailAccounts=1000, allowedDomains=20)
+            package.save()
+
+
+            print("Admin password successfully changed!")
+            return 1
+
+        token = hashPassword.generateToken('admin', adminPass)
+        admin = Administrator.objects.get(userName="admin")
+        admin.password = hashPassword.hash_password(adminPass)
+        admin.token = token
+        admin.save()
+
+        print("Admin password successfully changed!")
+
+if __name__ == "__main__":
+    main()
